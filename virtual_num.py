@@ -1,6 +1,42 @@
 #! -*- coding: utf-8 -*-
 import requests
 
+'''
+腾讯PSTN 号码保护小号直拨功能
+文档地址：https://cloud.tencent.com/document/product/610/12084
+
+### 使用步骤
+
+1. 使用 get_num 获取小号
+2. APP 或者 小程序 调起手机通话功能拨打小号
+3. 接通
+4. 订单完成之后解绑小号
+
+
+### 错误码参考
+0 	成功
+-1 	版本不支持
+-2 	参数异常
+-101 	参数 src 或 dst 号码不符合规则
+-102 	参数 displayNum 号码不符合规则
+-103 	参数 statusUrl 或 hangupUrl 或 recordUrl 不符合 URL 规范
+-106 	指定中间号已绑定，指定绑定失败
+-107 	分配中间号失败，中间号号码资源不足
+-108 	复用 bindId 及中间号绑定超过最大允许绑定次数
+-109 	分配中间号失败，主被叫号码绑定太频繁，如 1 小时内号码绑定超过 30 次
+-111 	accreditList 错误
+-201 	callId 异常
+-202 	时间戳参数异常
+-203 	网络异常
+-204 	bindId 不存在
+-205 	绑定时带了 bizId，解绑时没有带 bizId 字段
+-401 	appId 非法
+-402 	uri 不匹配
+-403 	ip 不在白名单
+-423 	服务器屏蔽此调用（调用方被入侵或者异常操作）
+-501 	服务器异常
+'''
+
 TIMEOUT = 2
 
 
@@ -23,9 +59,15 @@ class ClientError(Exception):
 
 class VirtualNum:
 
-    def __init__(self, appid, host):
+    def __init__(self, appid, host, id):
+        '''
+        :params appid: pstn appid
+        :params host:  pstn host
+        :params id:    pstn id 有腾讯统一分配
+        '''
         self.appid = appid
         self.host = host
+        self.id = id
 
     def prepare_request(self, method, path, params):
         _params = {
@@ -43,7 +85,12 @@ class VirtualNum:
             'Content-Type': 'application/json;charset=utf-8;',
             # 'Content-Length' requests 会自动加上
         }
-        req = requests.request(method, url, headers=headers, json=json_body,
+        # url query params
+        args = {
+            'id': self.id
+        }
+        req = requests.request(method, url, headers=headers,
+                               params=args, json=json_body,
                                timeout=(TIMEOUT, TIMEOUT))
         result = req.josn
         error_code = result['errorCode']
@@ -96,6 +143,12 @@ class VirtualNum:
                              值为 0：表示所有状态不需要推送
                              值为 4：表示只要推送主叫接听状态
                              值为 16191：表示所有状态都需要推送（上面所有值和）
+        ----
+        return:
+            virtualNum 	String 	分配的虚拟号
+            bindId 	    String 	双方号码 + 中间号绑定 ID，该 ID 全局唯一
+            refNum 	    String 	分配绑定中间号引用计数
+            requestId 	String 	requestId 原样返回
         '''
         path = '/201511v3/getVirtualNum'
         params = {
@@ -125,6 +178,11 @@ class VirtualNum:
                 该 requestId 在后面回拨请求响应和回调中都会原样返回
         :params biz_id: 应用二级业务 ID，bizId 需保证在该 appId 下全局唯一，
                 最大长度不超过 16 个字节。
+        ----
+        return:
+            bindId 	    String 	绑定 ID，该 ID 全局唯一
+            refLeftNum 	String 	中间号还剩引用计数，如果计数为 0 会解绑
+            requestId 	String 	requestId 原样返回
         '''
         path = '/201511v3/delVirtualNum'
         params = {
@@ -141,6 +199,34 @@ class VirtualNum:
         :params start_time_stamp: 话单开始时间戳
         :params end_time_stamp: 话单结束时间戳
         :params compress: 是否压缩（0：不压缩 1：使用 zlib 压缩）默认不压缩
+
+        ----
+        return:
+            callId 	            String 	呼叫通话 ID
+            requestId 	        可选 	App 操作 session buffer 原样返回
+            bindId 	            String 	双方号码 + 中间号绑定 ID，该 ID 全局唯一
+            src 	            String 	主叫号码
+            dst 	            String 	被叫号码
+            dstVirtualNum 	    String 	主叫通讯录直拨虚拟保护号码
+            startDstCallTime 	String 	被叫呼叫开始时间
+            startDstRingTime 	String 	被叫响铃开始时间
+            dstAcceptTime 	    String 	被叫接听时间
+            endCallTime 	    String 	用户挂机通话结束时间
+            callEndStatus 	    String 	通话最后状态：0：未知状态
+                                                      1：正常通话
+                                                      2：查询呼叫转移被叫号异常
+                                                      3：未接通
+                                                      4：未接听
+                                                      5：拒接挂断
+                                                      6：关机
+                                                      7：空号
+                                                      8：通话中
+                                                      9：欠费
+                                                      10：运营商线路或平台异常
+            srcDuration 	    String 	主叫接通虚拟保护号码到通话结束通话时间
+            dstDuration 	    String 	呼叫转接被叫接通到通话结束通话时间
+            recordUrl 	        String 	录音 URL，如果不录音或录音失败，该值为空
+            callCenterAcceptTime 	String 	虚拟保护号码平台收到呼叫时间
         '''
         path = '/201511v3/get400Cdr'
         params = {
@@ -152,3 +238,11 @@ class VirtualNum:
         }
         method, url, json_body = self.prepare_request('POST', path, params)
         return self.make_request(method, url, json_body)
+
+
+if __name__ == '__main__':
+    appid = '123'
+    host = 'pstn.cloud.com'
+    id = 1234
+    client = VirtualNum(appid, host, id)
+    num = client.get_num()
